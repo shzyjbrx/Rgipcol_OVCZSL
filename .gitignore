@@ -1,0 +1,6 @@
+logs/
+checkpoints/
+Data_files/
+tensorboards/
+__pycache__/
+*.pyc
