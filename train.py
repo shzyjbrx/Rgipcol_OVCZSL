@@ -113,7 +113,8 @@ def train(epoch, model, optimizer, trainloader, logger, device, cfg):
 
     start_iter = (epoch - 1) * len(trainloader)
 
-    for idx, batch in enumerate(tqdm(trainloader)):
+    is_main = (device == 'cuda:0')
+    for idx, batch in enumerate(tqdm(trainloader, disable=not is_main, mininterval=2.0)):
         it = start_iter + idx + 1
         if device == 'cuda:0':
             data_time.update(time.time() - end_time)
@@ -180,8 +181,8 @@ def validate_ge(epoch, model, testloader, evaluator, device, phase='val'):
     val_attrs, val_objs = zip(*dset.pairs)
     val_attrs = [dset.attr2idx[attr] for attr in val_attrs]
     val_objs = [dset.obj2idx[obj] for obj in val_objs]
-    model.val_attrs = torch.LongTensor(val_attrs).cuda()
-    model.val_objs = torch.LongTensor(val_objs).cuda()
+    model.val_attrs = torch.LongTensor(val_attrs).to(device)
+    model.val_objs = torch.LongTensor(val_objs).to(device)
     model.val_pairs = dset.pairs
 
     accuracies, all_sub_gt, all_attr_gt, all_obj_gt, all_pair_gt, all_pred = [], [], [], [], [], []
@@ -263,7 +264,9 @@ def main_worker(gpu, cfg):
 
     # Distribute batch size evenly between GPUs.
     cfg.TRAIN.batch_size = cfg.TRAIN.batch_size // cfg.DISTRIBUTED.world_size
-    print('Batch size on each gpu: %d' % cfg.TRAIN.batch_size)
+    if gpu == 0:
+        print('Batch size on each gpu: %d' % cfg.TRAIN.batch_size)
+        print('Prepare dataset')
 
     # Prepare dataset & dataloader.
     print('Prepare dataset')
@@ -309,9 +312,10 @@ def main_worker(gpu, cfg):
 
     # Prepare distributed.
     if cfg.DISTRIBUTED.world_size > 1:
-        print('Wrap model with DistributedDataParallel')
+        if gpu == 0:
+            print('Wrap model with DistributedDataParallel')
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[gpu], broadcast_buffers=False, find_unused_parameters=True)
+            model, device_ids=[gpu], broadcast_buffers=False, find_unused_parameters=False)
 
     if gpu == 0:
         m = model
@@ -334,13 +338,13 @@ def main_worker(gpu, cfg):
         if 'attr_embedder' in name_no_prefix or 'obj_embedder' in name_no_prefix:
             if cfg.TRAIN.lr_word_embedding > 0:
                 params_word_embedding.append(p)
-                print('params_word_embedding: %s' % name)
+                if gpu == 0: print('params_word_embedding: %s' % name)
         elif name_no_prefix.startswith('feat_extractor'):
             params_encoder.append(p)
-            print('params_encoder: %s' % name)
+            if gpu == 0: print('params_encoder: %s' % name)
         else:
             params.append(p)
-            print('params_main: %s' % name)
+            if gpu == 0: print('params_main: %s' % name)
 
     if cfg.TRAIN.lr_word_embedding > 0:
         optimizer = optim.Adam([
@@ -434,7 +438,8 @@ def main_worker(gpu, cfg):
                 best_records['val/best_auc'] = auc
                 best_records['val/best_hm'] = best_hm
                 if gpu == 0 :
-                    save_checkpoint(model, f'model_epoch{epoch}', cfg)
+                    # 始终覆盖同一个 best_model，避免生成大量 .pth 挤占磁盘和显存
+                    save_checkpoint(model, 'best_model', cfg)
             # if epoch > 1:
                 print('Evaluate on test set')
                 # Test.

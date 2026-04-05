@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import fasttext.util
+import torch.distributed as dist
 
 def load_bert_embeddings(wordemb,vocab,cfg):
     '''
@@ -60,7 +61,8 @@ def load_bert_embeddings(wordemb,vocab,cfg):
             emb = model2[k].cpu()
         embeds.append(emb)
     embeds = torch.stack(embeds)
-    print('BERT Embeddings loaded, total embeddings: {}'.format(embeds.size()))
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        print('BERT Embeddings loaded, total embeddings: {}'.format(embeds.size()))
     return embeds
 
 def load_word_embeddings(emb_file, vocab):

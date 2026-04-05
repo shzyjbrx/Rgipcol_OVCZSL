@@ -41,5 +41,5 @@ python train.py --cfg ${CONFIG} \
     DISTRIBUTED.world_size ${N_GPU} \
     TRAIN.clip_type "ViT-L/14" \
     TRAIN.finetune_backbone False \
-    TRAIN.batch_size 32 \
+    TRAIN.batch_size 64 \
     TRAIN.max_epoch 20

@@ -11,6 +11,7 @@ import pickle
 from PIL import Image
 import pdb
 import random
+import torch.distributed as dist
 
 class ImageLoader:
     def __init__(self, root):
@@ -122,10 +123,11 @@ class CompositionDataset(tdata.Dataset):
         self.attr2idx = {attr: idx for idx, attr in enumerate(self.all_attrs)}
 
 
-        print('# train pairs: %d | # val pairs: %d| # test pairs: %d' % (len(
-            self.train_pairs), len(self.val_pairs), len(self.test_pairs)))
-        print('# train images: %d | # val images: %d|# test images: %d' %
-              (len(self.train_data), len(self.val_data), len(self.test_data)))
+        is_main_process = not dist.is_initialized() or dist.get_rank() == 0
+
+        if is_main_process:
+            print('# train pairs: %d | # val pairs: %d| # test pairs: %d' %(len(self.train_pairs), len(self.val_pairs), len(self.test_pairs)))
+            print('# train images: %d | # val images: %d|# test images: %d' %(len(self.train_data), len(self.val_data), len(self.test_data)))
 
         self.sample_indices = list(range(len(self.data)))
         
@@ -154,7 +156,8 @@ class CompositionDataset(tdata.Dataset):
         self.extra_objs = list(set(self.extra_objs) - set(self.train_objs))
         self.extra_attrs = list(set(self.extra_attrs) - set(self.train_attrs))
         self.extra_pairs = list(set(self.extra_pairs) - set(self.train_pairs))
-        print('New_attrs:',len(self.extra_attrs),' New objs:',len(self.extra_objs),' New pairs:',len(self.extra_pairs))
+        if is_main_process:
+            print('New_attrs:',len(self.extra_attrs),' New objs:',len(self.extra_objs),' New pairs:',len(self.extra_pairs))
        
         self.unique_pairs =  self.pairs + self.extra_pairs
         self.unique_pair2idx = {pair: idx for idx, pair in enumerate(self.unique_pairs)}
@@ -312,10 +315,10 @@ class CompositionDataset(tdata.Dataset):
             only_test_objs, only_val_attrs, only_val_objs
         
     def __getitem__(self, index):
-        if hasattr(self, 'if_set_seed') and not self.if_set_seed:
-            # Trick to set different numpy random seeds for each worker thread.
-            np.random.seed(index)
-            self.if_set_seed = True
+        # if hasattr(self, 'if_set_seed') and not self.if_set_seed:
+        #     # Trick to set different numpy random seeds for each worker thread.
+        #     np.random.seed(index)
+        #     self.if_set_seed = True
 
         index = self.sample_indices[index]
         image, attr, obj = self.data[index]
@@ -417,39 +420,40 @@ class CompositionDataset(tdata.Dataset):
                     print(attr, obj, attr_rep,i2)
                     pdb.set_trace()
 
-                img1, attr1, obj1_a = self.data[i2]
+                img2_path, attr1, obj1_a = self.data[i2]
                 if attr_rep:
                     attr1 = attr_rep
-            
-                if self.cfg.TRAIN.use_precomputed_features:
-                    img1 = self.activations[img1]
-                else:
-                    img1 = self.loader(img1)
-                    img1 = self.transform(img1)
 
-                data['img1_a'] = img1
+                if self.cfg.TRAIN.use_precomputed_features:
+                    img2_tensor = self.activations[img2_path]
+                else:
+                    img2_tensor = self.loader(img2_path)
+                    img2_tensor = self.transform(img2_tensor)
+
+                data['img1_a'] = img2_tensor
+
                 data['attr1_a'] = self.attr2idx[attr1]
                 data['obj1_a'] = self.obj2idx[obj1_a]
                 data['idx1_a'] = i2
                 data['img1_name_a'] = self.data[i2][0]
 
                  # Object task.
-                obj_rep, i2 = self.sample_same_object(attr, obj, self.replace_obj, with_different_attr=True)
-                img1, attr1_o, obj1 = self.data[i2]
+                obj_rep, i3 = self.sample_same_object(attr, obj, self.replace_obj, with_different_attr=True)
+                img3_path, attr1_o, obj1 = self.data[i3]
                 if obj_rep:
                     obj1 = obj_rep
-                # print('OBJ:',attr1_o, obj1, img1)
 
                 if self.cfg.TRAIN.use_precomputed_features:
-                    img1 = self.activations[img1]
+                    img3_tensor = self.activations[img3_path]
                 else:
-                    img1 = self.loader(img1)
-                    img1 = self.transform(img1)
-                data['img1_o'] = img1
+                    img3_tensor = self.loader(img3_path)
+                    img3_tensor = self.transform(img3_tensor)
+
+                data['img1_o'] = img3_tensor
                 data['attr1_o'] = self.attr2idx[attr1_o]
                 data['obj1_o'] = self.obj2idx[obj1]
-                data['idx1_o'] = i2
-                data['img1_name_o'] = self.data[i2][0]
+                data['idx1_o'] = i3
+                data['img1_name_o'] = self.data[i3][0]
 
                 if self.cfg.MODEL.use_composed_pair_loss:
                     if (attr1_o, obj1_a) in self.unseen_pair2idx:

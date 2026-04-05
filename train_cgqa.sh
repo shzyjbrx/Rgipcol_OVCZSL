@@ -40,6 +40,6 @@ python train.py --cfg ${CONFIG} \
     DATASET.root_dir ${DATA_ROOT} \
     DISTRIBUTED.world_size ${N_GPU} \
     TRAIN.clip_type "ViT-L/14" \
-    TRAIN.finetune_backbone True \
+    TRAIN.finetune_backbone False \
     TRAIN.batch_size 64 \
-    TRAIN.max_epoch 40
+    TRAIN.max_epoch 20

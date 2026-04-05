@@ -320,7 +320,8 @@ class Evaluator:
             # Match of seen and unseen pairs
             seen_match = match[seen_ind]
             unseen_match = match[unseen_ind]
-            seen_score, unseen_score = torch.ones(512,5), torch.ones(512,5)
+            bs = match.shape[0]
+            seen_score, unseen_score = torch.ones(bs, 5), torch.ones(bs, 5)
 
             return attr_match, obj_match, match, seen_match, unseen_match, \
             torch.Tensor(seen_score+unseen_score), torch.Tensor(seen_score), torch.Tensor(unseen_score)

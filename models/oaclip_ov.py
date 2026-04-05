@@ -11,6 +11,7 @@ from .resnet_comb_feature import comb_resnet
 from torch.autograd import Variable
 from torch.nn.modules.loss import _WeightedLoss
 import pdb
+import torch.distributed as dist
 
 ## Label Smoothing using manual weights, seems to work for training labels only, not sure if we add neighbors
 class LabelSmoothingCrossEntropy_pair(_WeightedLoss):
@@ -44,11 +45,12 @@ class LabelSmoothingCrossEntropy_pair(_WeightedLoss):
             new2 = new1.scatter_(1, targets.data.unsqueeze(1), (1-smoothing)*0.5)  # add 10% to lbl 
             n_weights = ((1-smoothing)*0.5)/5 
             orig_num_cls = n_classes - 5
-            n1 = (torch.ones(targets.size(0))*orig_num_cls).to(torch.int64).cuda()
-            n2 = (torch.ones(targets.size(0))*(orig_num_cls+1)).to(torch.int64).cuda()
-            n3 = (torch.ones(targets.size(0))*(orig_num_cls+2)).to(torch.int64).cuda()
-            n4 = (torch.ones(targets.size(0))*(orig_num_cls+3)).to(torch.int64).cuda()
-            n5 = (torch.ones(targets.size(0))*(orig_num_cls+4)).to(torch.int64).cuda()
+            device = targets.device
+            n1 = (torch.ones(targets.size(0))*orig_num_cls).to(torch.int64).to(device)
+            n2 = (torch.ones(targets.size(0))*(orig_num_cls+1)).to(torch.int64).to(device)
+            n3 = (torch.ones(targets.size(0))*(orig_num_cls+2)).to(torch.int64).to(device)
+            n4 = (torch.ones(targets.size(0))*(orig_num_cls+3)).to(torch.int64).to(device)
+            n5 = (torch.ones(targets.size(0))*(orig_num_cls+4)).to(torch.int64).to(device)
             
             tar = new2.scatter_(1, n1.data.unsqueeze(1), n_weights)
             tar = tar.scatter_(1, n2.data.unsqueeze(1), n_weights)
@@ -119,45 +121,45 @@ class OACLIPv3(nn.Module):
         train_attrs = [dset.attr2idx[attr] for attr in train_attrs]
         train_objs = [dset.obj2idx[obj] for obj in train_objs]
         train_pairs = [dset.pair2idx[pair] for pair in dset.train_pairs]
-        self.train_attrs = torch.LongTensor(train_attrs).cuda()
-        self.train_objs = torch.LongTensor(train_objs).cuda()
-        self.train_pairs = torch.LongTensor(train_pairs).cuda()
+        self.register_buffer('train_attrs', torch.LongTensor(train_attrs))
+        self.register_buffer('train_objs', torch.LongTensor(train_objs))
+        self.register_buffer('train_pairs', torch.LongTensor(train_pairs))
 
         train_attrs1 = dset.train_attrs
         train_objs1 = dset.train_objs
         train_attrs1 = [dset.attr2idx[attr] for attr in train_attrs1]
         train_objs1 = [dset.obj2idx[obj] for obj in train_objs1]
-        self.train_attrs1 = torch.LongTensor(train_attrs1).cuda()
-        self.train_objs1 = torch.LongTensor(train_objs1).cuda()
+        self.register_buffer('train_attrs1', torch.LongTensor(train_attrs1))
+        self.register_buffer('train_objs1', torch.LongTensor(train_objs1))
 
         train_attrs2 = dset.train_attrs_extra
         train_objs2 = dset.train_objs_extra
         train_attrs2 = [dset.train_extra_attr2idx[attr] for attr in train_attrs2]
         train_objs2 = [dset.train_extra_obj2idx[obj] for obj in train_objs2]
-        self.train_attrs2 = torch.LongTensor(train_attrs2).cuda()
-        self.train_objs2 = torch.LongTensor(train_objs2).cuda()
+        self.register_buffer('train_attrs2', torch.LongTensor(train_attrs2))
+        self.register_buffer('train_objs2', torch.LongTensor(train_objs2))
     
         
         all_pairs = [dset.pair2idx[pair] for pair in dset.pairs]
-        self.all_pairs = torch.LongTensor(all_pairs).cuda()
+        self.register_buffer('all_pairs', torch.LongTensor(all_pairs))
         self.all_pairs1 = dset.pairs
 
         all_attr = [dset.attr2idx[attr] for attr in dset.all_attrs]
-        self.all_attrs = torch.LongTensor(all_attr).cuda()
+        self.register_buffer('all_attrs', torch.LongTensor(all_attr))
         all_obj = [dset.obj2idx[obj] for obj in dset.all_objs]
-        self.all_objs = torch.LongTensor(all_obj).cuda()
+        self.register_buffer('all_objs', torch.LongTensor(all_obj))
 
         test_pairs = [dset.pair2idx[pair] for pair in dset.test_pairs]
-        self.test_pairs = torch.LongTensor(test_pairs).cuda()
+        self.register_buffer('test_pairs', torch.LongTensor(test_pairs))
         self.test_pairs1 = dset.test_pairs 
 
         unseen_pair_attrs, unseen_pair_objs = zip(*dset.unseen_pairs)
         unseen_pair_attrs = [dset.attr2idx[attr] for attr in unseen_pair_attrs]
         unseen_pair_objs = [dset.obj2idx[obj] for obj in unseen_pair_objs]
-        self.unseen_pair_attrs = torch.LongTensor(unseen_pair_attrs).cuda()
-        self.unseen_pair_objs = torch.LongTensor(unseen_pair_objs).cuda()
+        self.register_buffer('unseen_pair_attrs', torch.LongTensor(unseen_pair_attrs))
+        self.register_buffer('unseen_pair_objs', torch.LongTensor(unseen_pair_objs))
         unseen_pairs = [dset.pair2idx[pair] for pair in dset.unseen_pairs]
-        self.unseen_pairs = torch.LongTensor(unseen_pairs).cuda()
+        self.register_buffer('unseen_pairs', torch.LongTensor(unseen_pairs))
         
         ## extra pairs
         self.extra_obj2idx = {obj: idx for idx, obj in enumerate(dset.extra_objs)}
@@ -166,12 +168,12 @@ class OACLIPv3(nn.Module):
         extra_objs = [self.extra_obj2idx[obj] for obj in dset.extra_objs]
         extra_attrs = [self.extra_attr2idx[attr] for attr in dset.extra_attrs]
         extra_pairs = [self.extra_pair2idx[pair] for pair in dset.extra_pairs]
-        self.extra_attrs = torch.LongTensor(extra_attrs).cuda()
-        self.extra_objs = torch.LongTensor(extra_objs).cuda()
-        self.extra_pairs = torch.LongTensor(extra_pairs).cuda()
+        self.register_buffer('extra_attrs', torch.LongTensor(extra_attrs))
+        self.register_buffer('extra_objs', torch.LongTensor(extra_objs))
+        self.register_buffer('extra_pairs', torch.LongTensor(extra_pairs))
         
         train_extra_pairs = [dset.train_extra_pair2idx[pair] for pair in dset.train_pairs_extra]
-        self.train_extra_pairs = torch.LongTensor(train_extra_pairs).cuda()
+        self.register_buffer('train_extra_pairs', torch.LongTensor(train_extra_pairs))
 
         # Dimension of the joint image-label embedding space.
         if '+' in cfg.MODEL.wordembs:
@@ -188,19 +190,21 @@ class OACLIPv3(nn.Module):
         # ==================== 开始替换 ====================
         self.clip_type = cfg.TRAIN.clip_type
         
-        # 💡 强制打印当前的模型类型，方便排查
-        print(f"DEBUG: Initializing OACLIPv3 with clip_type: {self.clip_type}")
+        is_main_process = not dist.is_initialized() or dist.get_rank() == 0
 
-        # 1. 统一在最前面定义初始通道数 (feat_dim) 和网格大小 (grid_size)
-        # 💡 使用大写转换和更宽松的判断，防止拼写差异导致进入 else 分支
+        if is_main_process:
+            print(f"DEBUG: Initializing OACLIPv3 with clip_type: {self.clip_type}")
+
         if 'L/14' in self.clip_type.upper() or 'VIT-L' in self.clip_type.upper():
             feat_dim = 1024
             self.grid_size = 16  # 16x16=256
-            print(f"DEBUG: Selected ViT-L/14 mode. feat_dim={feat_dim}, grid={self.grid_size}")
+            if is_main_process:
+                print(f"DEBUG: Selected ViT-L/14 mode. feat_dim={feat_dim}, grid={self.grid_size}")
         else:
             feat_dim = 512
             self.grid_size = 7   # 7x7=49
-            print(f"DEBUG: Selected Default mode. feat_dim={feat_dim}, grid={self.grid_size}")
+            if is_main_process:
+                print(f"DEBUG: Selected Default mode. feat_dim={feat_dim}, grid={self.grid_size}")
 
         if not cfg.TRAIN.use_precomputed_features and not cfg.TRAIN.comb_features:
             self.feat_extractor = Backbone(self.clip_type)
@@ -219,7 +223,8 @@ class OACLIPv3(nn.Module):
                 nn.BatchNorm1d(cfg.MODEL.img_emb_dim),
                 nn.ReLU()
             ]
-            print(f"DEBUG: Built img_embedder with input dim {feat_dim}")
+            if is_main_process:
+                print(f"DEBUG: Built img_embedder with input dim {feat_dim}")
         elif self.clip_type == 'resnet':
             img_emb_modules = [
                 nn.Conv2d(cfg.MODEL.img_emb_dim, cfg.MODEL.img_emb_dim, kernel_size=1, bias=False),
@@ -694,10 +699,10 @@ class ImagePairComparison(nn.Module):
         self.num_attrs = num_attrs
         self.num_objs = num_objs
 
-        self.train_attrs = train_attrs #torch.LongTensor(list(range(self.num_attrs))).cuda()
-        self.train_objs = train_objs #torch.LongTensor(list(range(self.num_objs))).cuda()
-        self.train_extra_attrs = extra_attrs
-        self.train_extra_objs = extra_objs
+        self.register_buffer('train_attrs', train_attrs)
+        self.register_buffer('train_objs', train_objs)
+        self.register_buffer('train_extra_attrs', extra_attrs)
+        self.register_buffer('train_extra_objs', extra_objs)
 
         self.attr_embedder = attr_embedder
         self.obj_embedder = obj_embedder
