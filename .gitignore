@@ -4,3 +4,4 @@ Data_files/
 tensorboards/
 __pycache__/
 *.pyc
+llm_nel_gen/

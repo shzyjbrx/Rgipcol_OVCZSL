@@ -7,8 +7,8 @@
 #SBATCH --time=24:00:00
 # 1. 修改日志输出路径为 cgqa 专用目录
 # 请确保已创建 logs/cgqa/train 目录
-#SBATCH --output=logs/cgqa/train/%j.out
-#SBATCH --error=logs/cgqa/train/%j.err
+#SBATCH --output=logs/cgqa/train/CLIPL+FT-%j.out
+#SBATCH --error=logs/cgqa/train/CLIPL+FT-%j.err
 
 module purge
 module load compilers/gcc/9.3.0
@@ -39,7 +39,15 @@ export OMP_NUM_THREADS=1
 python train.py --cfg ${CONFIG} \
     DATASET.root_dir ${DATA_ROOT} \
     DISTRIBUTED.world_size ${N_GPU} \
+    TRAIN.checkpoint_dir "checkpoints/cgqa/CLIPL_FT" \
+    TRAIN.log_dir "tensorboards/cgqa/CLIPL_FT" \
     TRAIN.clip_type "ViT-L/14" \
-    TRAIN.finetune_backbone False \
-    TRAIN.batch_size 64 \
+    MODEL.extra_pair_loss_ratio 0.0 \
+    MODEL.extra_attr_loss_ratio 0.0 \
+    MODEL.extra_obj_loss_ratio 0.0 \
+    MODEL.use_extra_pair_loss False \
+    TRAIN.finetune_backbone True \
+    TRAIN.lr_encoder 1e-6 \
+    TRAIN.lr 1e-5 \
+    TRAIN.batch_size 16 \
     TRAIN.max_epoch 20

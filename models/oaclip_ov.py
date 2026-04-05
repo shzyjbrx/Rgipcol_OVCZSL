@@ -475,8 +475,13 @@ class OACLIPv3(nn.Module):
                 img2_a = self.img_embedder(img2_a).view(bs, -1, h*w)
                 img2_o = self.img_embedder(img2_o).view(bs, -1, h*w)
         
-        at_neigh = {'n1': batch['at1'], 'n2': batch['at2'], 'n3': batch['at3'], 'n4':batch['at4'], 'n5': batch['at5']}
-        ob_neigh = {'n1':batch['ob1'], 'n2':batch['ob2'], 'n3': batch['ob3'], 'n4':batch['ob4'], 'n5': batch['ob5']}
+        if self.cfg.MODEL.use_extra_pair_loss:
+            at_neigh = {'n1': batch['at1'], 'n2': batch['at2'], 'n3': batch['at3'], 'n4':batch['at4'], 'n5': batch['at5']}
+            ob_neigh = {'n1': batch['ob1'], 'n2': batch['ob2'], 'n3': batch['ob3'], 'n4': batch['ob4'], 'n5': batch['ob5']}
+        else:
+            # 如果关闭了 NEL，传给辅助损失函数的邻居信息设为 None
+            at_neigh = None
+            ob_neigh = None
 
         aux_loss = self.image_pair_comparison(
             img1, img2_a, img2_o, attr_labels, obj_labels, at_neigh, ob_neigh, mask_task)
@@ -778,6 +783,7 @@ class ImagePairComparison(nn.Module):
             d_k = img1.size(1) 
             relevance = torch.matmul(img1T, img2) / np.sqrt(d_k)
         # relevance = self.relu(relevance)
+        non_relevance = -relevance 
         if self.dropout_cross_attn is not None:
             relevance = self.dropout_cross_attn(relevance)
 
@@ -856,7 +862,7 @@ class ImagePairComparison(nn.Module):
             attr_pred2_ = self.train_attrs[attr_pred2_]
             correct_attr2 = (attr_pred2_ == attr1[mask])
 
-            if self.extra_attr_loss_ratio > 0.0:
+            if self.extra_attr_loss_ratio > 0.0 and at_neigh is not None:
                 
                 attr_emb1 = self.attr_embedder(self.train_extra_attrs)
                 attr_weight1 = self.attr_mlp(attr_emb1)
@@ -911,7 +917,7 @@ class ImagePairComparison(nn.Module):
             obj_pred2_ = self.train_objs[obj_pred2_]
             correct_obj2 = (obj_pred2_ == obj1[mask])
 
-            if self.extra_obj_loss_ratio > 0.0:
+            if self.extra_obj_loss_ratio > 0.0 and ob_neigh is not None:
                 obj_emb1 = self.obj_embedder(self.train_extra_objs)
                 obj_weight1 = self.obj_mlp(obj_emb1)
                 

@@ -9,6 +9,8 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import pdb
 from bisect import bisect_right
+import clip
+import sys
 
 
 from models.oaclip_ov import OACLIPv3
@@ -230,6 +232,82 @@ def validate_ge(epoch, model, testloader, evaluator, device, phase='val'):
     torch.cuda.empty_cache()
     return stats
 
+
+
+def validate_pure_clip_zsl(testloader, evaluator, device, clip_model_name='ViT-L/14'):
+    """
+    直接使用原始的 CLIP 模型进行 Zero-Shot 测试，不经过任何附加网络层。
+    """
+    print(f"\n======================================")
+    print(f"Loading original {clip_model_name} for Pure Zero-Shot testing...")
+    print(f"======================================")
+    
+    # 1. 加载原始的 CLIP 模型
+    model, preprocess = clip.load(clip_model_name, device=device)
+    model.eval()
+
+    # 2. 获取所有的测试类别 (pairs) 并构建 Prompt 文本
+    dset = testloader.dataset
+    pairs = dset.pairs
+    # 提示词工程：根据论文常见设定，使用 "a photo of a {attr} {obj}"
+    prompts = [f"a photo of a {pair[0]} {pair[1]}" for pair in pairs]
+    text_tokens = clip.tokenize(prompts).to(device)
+    
+    # 提取并归一化文本特征
+    with torch.no_grad():
+        text_features = model.encode_text(text_tokens)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+    all_attr_gt, all_obj_gt, all_pair_gt = [], [], []
+    # 创建字典来存储每个 pair 对应的预测分数
+    all_pred_dict = {pair: [] for pair in pairs}
+
+    # 3. 遍历测试集
+    for data in tqdm(testloader, desc='Pure CLIP ZSL Testing'):
+        # 注意：这里假设 dataset 返回的 data['img'] 已经是由 CLIP 的 preprocess 处理过的
+        images = data['img'].to(device)
+        attr_truth, obj_truth, pair_truth = data['attr'], data['obj'], data['pair']
+        
+        all_attr_gt.append(attr_truth)
+        all_obj_gt.append(obj_truth)
+        all_pair_gt.append(pair_truth)
+
+        with torch.no_grad():
+            # 提取并归一化图像特征
+            image_features = model.encode_image(images)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            
+            # 计算余弦相似度并转换为概率分布
+            logit_scale = model.logit_scale.exp()
+            logits = logit_scale * image_features @ text_features.T
+            scores = logits.softmax(dim=-1)
+
+        # 记录分数
+        for i, pair in enumerate(pairs):
+            # all_pred_dict[pair].append(scores[:, i].cpu())
+            all_pred_dict[pair].append(logits[:, i].float().cpu()) 
+
+    # 4. 拼接所有批次的数据
+    all_attr_gt = torch.cat(all_attr_gt).cpu()
+    all_obj_gt = torch.cat(all_obj_gt).cpu()
+    all_pair_gt = torch.cat(all_pair_gt).cpu()
+    
+    for pair in pairs:
+        all_pred_dict[pair] = torch.cat(all_pred_dict[pair])
+
+    # 5. 调用评估器计算 AUC 和精度
+    print("Evaluating ZSL results...")
+    results = evaluator.score_model(all_pred_dict, all_obj_gt, bias=1e3, topk=1)
+    stats = evaluator.evaluate_predictions(results, all_attr_gt, all_obj_gt, all_pair_gt, all_pred_dict, topk=1)
+
+    result_str = ''
+    for key in stats:
+        result_str += key + '  ' + str(round(stats[key], 4)) + '| '
+    print("\nPure CLIP ZSL Results:")
+    print(result_str)
+    
+    return stats
+
 def main_worker(gpu, cfg):
     """Main training code.
     """
@@ -315,7 +393,7 @@ def main_worker(gpu, cfg):
         if gpu == 0:
             print('Wrap model with DistributedDataParallel')
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[gpu], broadcast_buffers=False, find_unused_parameters=False)
+            model, device_ids=[gpu], broadcast_buffers=False, find_unused_parameters=True)
 
     if gpu == 0:
         m = model
@@ -323,6 +401,9 @@ def main_worker(gpu, cfg):
             m = m.module
         evaluator_val_ge = evaluator_ge.Evaluator(valset, cfg)
         evaluator_test_ge = evaluator_ge.Evaluator(testset, cfg)
+        
+        # validate_pure_clip_zsl(testloader, evaluator_test_ge, device, clip_model_name=cfg.TRAIN.clip_type)
+        # sys.exit(0) 
     
     torch.backends.cudnn.benchmark = True
 
@@ -476,8 +557,8 @@ def main_worker(gpu, cfg):
         dist.destroy_process_group()
 
     print('Done: %s' % cfg.config_name)
-    print('New Best AUC:',best_records['test/auc_at_best_val'])
-    print('New Best HM:',best_records['test/hm_at_best_val'])
+    print('New Best AUC:', best_records.get('test/AUC', 0.0))
+    print('New Best HM:', best_records.get('test/best_hm', 0.0))
                 
 
 def main():
