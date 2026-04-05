@@ -6,7 +6,7 @@ DATASET:
   name: 'cgqa'
   root_dir: 'path/to/data/cgqa'
   splitname: 'compositional-split-natural'
-  split_files_loc: '../Data_files/CGQA'
+  split_files_loc: 'Data_files/CGQA'
 
 DISTRIBUTED:
   world_size: 1

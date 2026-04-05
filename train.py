@@ -325,24 +325,22 @@ def main_worker(gpu, cfg):
     params_word_embedding = []
     params_encoder = []
     params = []
-    ### for printing which layers are being trained
-    # for name, p in model.named_parameters():
-    #     if not p.requires_grad:
-    #         continue
-
-    #     if 'attr_embedder' in name or 'obj_embedder' in name:
-    #         if cfg.TRAIN.lr_word_embedding > 0:
-    #             params_word_embedding.append(p)
-    #             if gpu == 0:
-    #                 print('params_word_embedding: %s' % name)
-    #     elif name.startswith('feat_extractor'):
-    #         params_encoder.append(p)
-    #         if gpu == 0:
-    #             print('params_encoder: %s' % name)
-    #     else:
-    #         params.append(p)
-    #         if gpu == 0:
-    #             print('params_main: %s' % name)
+    ## for printing which layers are being trained
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        name_no_prefix = name.replace('module.', '', 1)
+        
+        if 'attr_embedder' in name_no_prefix or 'obj_embedder' in name_no_prefix:
+            if cfg.TRAIN.lr_word_embedding > 0:
+                params_word_embedding.append(p)
+                print('params_word_embedding: %s' % name)
+        elif name_no_prefix.startswith('feat_extractor'):
+            params_encoder.append(p)
+            print('params_encoder: %s' % name)
+        else:
+            params.append(p)
+            print('params_main: %s' % name)
 
     if cfg.TRAIN.lr_word_embedding > 0:
         optimizer = optim.Adam([
