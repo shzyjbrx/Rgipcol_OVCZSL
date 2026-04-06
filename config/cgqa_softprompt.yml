@@ -1,0 +1,78 @@
+config_name: 'cgqa_softprompt'
+
+DATASET:
+  dset_name: 'cgqa'
+  dset_split: '1'
+  name: 'cgqa'
+  root_dir: '/home/bingxing2/home/scx6d4e/run/xuanzhenzhen/Base/data/cgqa'
+  splitname: 'compositional-split-natural'
+  split_files_loc: 'Data_files/cgqa'
+
+DISTRIBUTED:
+  world_size: 1
+
+MODEL:
+  name: 'clip_softprompt'
+  n_ctx: 8                       # 软提示长度 (Troika 默认也是 8，且更省显存)
+
+  # ── 损失权重 ────────────────────────────────────────
+  w_loss_attr: 0.3
+  w_loss_obj:  0.3
+
+  # ── 关闭所有 NEL / 原模型专用开关 ────────────────────
+  use_nel_data:           False  # 跳过 NEL pickle 加载
+  use_extra_pair_loss:    False
+  use_extra_attr_loss:    False
+  use_extra_obj_loss:     False
+  use_composed_pair_loss: False
+  use_emb_pair_loss:      False
+  use_attr_loss:          False  # 已在模型内部处理
+  use_obj_loss:           False
+
+  # ── 以下字段 dataset.py 中会引用，需要提供默认值 ──────
+  use_fg_estimator:       False
+  img_emb_dim:            2048
+  img_emb_drop:           0.0
+  img_emb_method:         'conv_interm'
+  img_final_bias:         True
+  img_drop_last:          0.0
+  drop_input:             0.0
+  smoothing:              0.0
+  load_checkpoint:        False
+  weights:                ''
+  optim_weights:          ''
+
+TRAIN:
+  batch_size:             256    # 若显存溢出可降至 128
+  checkpoint_dir:         'checkpoints'
+  clip_type:              'ViT-L/14'
+  decay_factor:           0.1
+  decay_patience:         3
+  decay_strategy:         'milestone'
+  disp_interval:          50
+  eval_every_epoch:       1
+  final_max_epoch:        15     # 修正：与 max_epoch 保持一致，防止死锁
+  finetune_backbone:      False  # 编码器完全冻结
+  log_dir:                'tensorboards'
+  lr:                     2e-3   # 软提示学习率
+  lr_decay_milestones:    [8, 12] # 由于总 epoch 改为 15，衰减节点相应提前
+  lr_encoder:             0.0
+  lr_word_embedding:      0.0
+  max_epoch:              15     # Troika 在 CGQA 上的默认轮数
+  n_sample_hard_negative: 0
+  num_workers:            4      # 若发生 DDP 数据加载卡死，可设为 0 或 1
+  sample_hard_negative:   False
+  sample_negative_pairs:  -1
+  sample_similar_object:  False
+  save_every_epoch:       1
+  seed:                   124
+  start_epoch:            1
+  start_epoch_validate:   0
+  test_batch_size:        512
+  use_precomputed_features: False
+  wd:                     1e-4
+  wd_encoder:             0.0
+  comb_features:          False
+
+EVAL:
+  topk: 1

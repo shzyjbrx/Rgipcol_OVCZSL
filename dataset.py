@@ -128,6 +128,28 @@ class CompositionDataset(tdata.Dataset):
         if is_main_process:
             print('# train pairs: %d | # val pairs: %d| # test pairs: %d' %(len(self.train_pairs), len(self.val_pairs), len(self.test_pairs)))
             print('# train images: %d | # val images: %d|# test images: %d' %(len(self.train_data), len(self.val_data), len(self.test_data)))
+            print('-' * 40)
+            print(f"数据集: {cfg.DATASET.name} | 划分方式: {split}")
+            print(f"总属性数: {len(self.all_attrs)} | 总物体数: {len(self.all_objs)} | 总组合数: {len(self.pairs)}")
+            print('-' * 40)
+            print(f"【训练集统计】")
+            print(f"  训练组合数: {len(self.train_pairs)}")
+            print(f"  训练属性数: {len(self.train_attrs)}")
+            print(f"  训练物体数: {len(self.train_objs)}")
+            print(f"  训练图像数: {len(self.train_data)}")
+            
+            print(f"【验证集统计】")
+            print(f"  验证组合数: {len(self.val_pairs)}")
+            # 这里的 self.val_attrs 实际上是 parse_split 返回的 only_val_attrs
+            print(f"  验证集独有属性数: {len(self.val_attrs)}")
+            print(f"  验证集独有物体数: {len(self.val_objs)}")
+            
+            print(f"【测试集统计】")
+            print(f"  测试组合数: {len(self.test_pairs)}")
+            # 这里的 self.test_attrs 实际上是 parse_split 返回的 only_test_attrs
+            print(f"  测试集独有属性数: {len(self.test_attrs)}")
+            print(f"  测试集独有物体数: {len(self.test_objs)}")
+            print('-' * 40)
 
         self.sample_indices = list(range(len(self.data)))
         
@@ -146,18 +168,47 @@ class CompositionDataset(tdata.Dataset):
             self.replace_attr['crouched'] = 'ugly'
         else:
             print('Enter a valid dataset name: some files are missing for: ',self.cfg.DATASET.dset_name)
-        self.seen_pairs_neighbors = pickle.load(open(self.cfg.DATASET.split_files_loc+'/Train_seen_pairs_neighbors_'+self.cfg.DATASET.dset_name+'_'+str(self.cfg.DATASET.dset_split)+'.pkl','rb'))
-        self.seen_attr_neighbors = pickle.load(open(self.cfg.DATASET.split_files_loc+'/Neighbor_attr_'+self.cfg.DATASET.dset_name+'_'+str(self.cfg.DATASET.dset_split)+'.pkl','rb'))
-        self.seen_obj_neighbors = pickle.load(open(self.cfg.DATASET.split_files_loc+'/Neighbor_obj_'+self.cfg.DATASET.dset_name+'_'+str(self.cfg.DATASET.dset_split)+'.pkl','rb'))
+        # self.seen_pairs_neighbors = pickle.load(open(self.cfg.DATASET.split_files_loc+'/Train_seen_pairs_neighbors_'+self.cfg.DATASET.dset_name+'_'+str(self.cfg.DATASET.dset_split)+'.pkl','rb'))
+        # self.seen_attr_neighbors = pickle.load(open(self.cfg.DATASET.split_files_loc+'/Neighbor_attr_'+self.cfg.DATASET.dset_name+'_'+str(self.cfg.DATASET.dset_split)+'.pkl','rb'))
+        # self.seen_obj_neighbors = pickle.load(open(self.cfg.DATASET.split_files_loc+'/Neighbor_obj_'+self.cfg.DATASET.dset_name+'_'+str(self.cfg.DATASET.dset_split)+'.pkl','rb'))
 
-        self.extra_pairs = process_neighbors_list(self.seen_pairs_neighbors) 
-        self.extra_attrs = process_neighbors_list(self.seen_attr_neighbors) 
-        self.extra_objs = process_neighbors_list(self.seen_obj_neighbors) 
-        self.extra_objs = list(set(self.extra_objs) - set(self.train_objs))
-        self.extra_attrs = list(set(self.extra_attrs) - set(self.train_attrs))
-        self.extra_pairs = list(set(self.extra_pairs) - set(self.train_pairs))
-        if is_main_process:
-            print('New_attrs:',len(self.extra_attrs),' New objs:',len(self.extra_objs),' New pairs:',len(self.extra_pairs))
+        # self.extra_pairs = process_neighbors_list(self.seen_pairs_neighbors) 
+        # self.extra_attrs = process_neighbors_list(self.seen_attr_neighbors) 
+        # self.extra_objs = process_neighbors_list(self.seen_obj_neighbors) 
+        # self.extra_objs = list(set(self.extra_objs) - set(self.train_objs))
+        # self.extra_attrs = list(set(self.extra_attrs) - set(self.train_attrs))
+        # self.extra_pairs = list(set(self.extra_pairs) - set(self.train_pairs))
+        # if is_main_process:
+        #     print('New_attrs:',len(self.extra_attrs),' New objs:',len(self.extra_objs),' New pairs:',len(self.extra_pairs))
+        use_nel = getattr(cfg.MODEL, 'use_nel_data', True)
+        if use_nel:
+            self.seen_pairs_neighbors = pickle.load(open(
+                self.cfg.DATASET.split_files_loc + '/Train_seen_pairs_neighbors_' +
+                self.cfg.DATASET.dset_name + '_' + str(self.cfg.DATASET.dset_split) + '.pkl', 'rb'))
+            self.seen_attr_neighbors = pickle.load(open(
+                self.cfg.DATASET.split_files_loc + '/Neighbor_attr_' +
+                self.cfg.DATASET.dset_name + '_' + str(self.cfg.DATASET.dset_split) + '.pkl', 'rb'))
+            self.seen_obj_neighbors = pickle.load(open(
+                self.cfg.DATASET.split_files_loc + '/Neighbor_obj_' +
+                self.cfg.DATASET.dset_name + '_' + str(self.cfg.DATASET.dset_split) + '.pkl', 'rb'))
+
+            self.extra_pairs = process_neighbors_list(self.seen_pairs_neighbors)
+            self.extra_attrs = process_neighbors_list(self.seen_attr_neighbors)
+            self.extra_objs  = process_neighbors_list(self.seen_obj_neighbors)
+            self.extra_objs  = list(set(self.extra_objs)  - set(self.train_objs))
+            self.extra_attrs = list(set(self.extra_attrs) - set(self.train_attrs))
+            self.extra_pairs = list(set(self.extra_pairs) - set(self.train_pairs))
+            if is_main_process:
+                print('New_attrs:', len(self.extra_attrs),
+                    ' New objs:', len(self.extra_objs),
+                    ' New pairs:', len(self.extra_pairs))
+        else:
+            # 软提示模型不需要 NEL 扩展数据
+            self.extra_pairs = []
+            self.extra_attrs = []
+            self.extra_objs  = []
+            if is_main_process:
+                print('[Dataset] NEL 数据加载已跳过 (use_nel_data=False)')
        
         self.unique_pairs =  self.pairs + self.extra_pairs
         self.unique_pair2idx = {pair: idx for idx, pair in enumerate(self.unique_pairs)}

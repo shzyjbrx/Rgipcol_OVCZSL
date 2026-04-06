@@ -1,0 +1,78 @@
+config_name: 'mit_softprompt'
+
+DATASET:
+  dset_name: 'mit'
+  dset_split: '1'
+  name: 'mitstates'
+  root_dir: '/home/bingxing2/home/scx6d4e/run/xuanzhenzhen/Base/data/mit-states'
+  splitname: 'compositional-split-natural'
+  split_files_loc: 'Data_files/MIT'
+
+DISTRIBUTED:
+  world_size: 1
+
+MODEL:
+  name: 'clip_softprompt'
+  n_ctx: 16                      # 软提示长度
+
+  # ── 损失权重 ────────────────────────────────────────
+  w_loss_attr: 0.3
+  w_loss_obj:  0.3
+
+  # ── 关闭所有 NEL / 原模型专用开关 ────────────────────
+  use_nel_data:           False  # 跳过 NEL pickle 加载
+  use_extra_pair_loss:    False
+  use_extra_attr_loss:    False
+  use_extra_obj_loss:     False
+  use_composed_pair_loss: False
+  use_emb_pair_loss:      False
+  use_attr_loss:          False  # 已在模型内部处理
+  use_obj_loss:           False
+
+  # ── 以下字段 dataset.py 中会引用，需要提供默认值 ──────
+  use_fg_estimator:       False
+  img_emb_dim:            2048
+  img_emb_drop:           0.0
+  img_emb_method:         'conv_interm'
+  img_final_bias:         True
+  img_drop_last:          0.0
+  drop_input:             0.0
+  smoothing:              0.0
+  load_checkpoint:        False
+  weights:                ''
+  optim_weights:          ''
+
+TRAIN:
+  batch_size:             256    # 编码器冻结，batch 可以更大
+  checkpoint_dir:         'checkpoints'
+  clip_type:              'ViT-L/14'
+  decay_factor:           0.1
+  decay_patience:         3
+  decay_strategy:         'milestone'
+  disp_interval:          50
+  eval_every_epoch:       1
+  final_max_epoch:        20
+  finetune_backbone:      False  # 编码器完全冻结
+  log_dir:                'tensorboards'
+  lr:                     2e-3   # 软提示可以用更大的学习率
+  lr_decay_milestones:    [35, 45]
+  lr_encoder:             0.0
+  lr_word_embedding:      0.0
+  max_epoch:              20
+  n_sample_hard_negative: 0
+  num_workers:            4
+  sample_hard_negative:   False
+  sample_negative_pairs:  -1
+  sample_similar_object:  False
+  save_every_epoch:       1
+  seed:                   124
+  start_epoch:            1
+  start_epoch_validate:   0
+  test_batch_size:        512
+  use_precomputed_features: False
+  wd:                     1e-4
+  wd_encoder:             0.0
+  comb_features:          False
+
+EVAL:
+  topk: 1

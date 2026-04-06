@@ -11,13 +11,13 @@ import pdb
 from bisect import bisect_right
 import clip
 import sys
-
+from torch.cuda.amp import autocast, GradScaler
 
 from models.oaclip_ov import OACLIPv3
 from dataset import CompositionDataset
 import evaluator as evaluator_ge
 from tqdm import tqdm
-
+from models.clip_softprompt import CLIPSoftPrompt
 from utils import utils
 from config import cfg
 from torch.utils.tensorboard import SummaryWriter
@@ -76,100 +76,93 @@ def save_checkpoint(model_or_optim, name, cfg):
 
 def train(epoch, model, optimizer, trainloader, logger, device, cfg):
     model.train()
-    if not cfg.TRAIN.finetune_backbone and not cfg.TRAIN.use_precomputed_features:
-        m = model
-        if isinstance(model, nn.parallel.DistributedDataParallel):
-            m = model.module
-        freeze(m.feat_extractor)
+    
+    # 1. 冻结逻辑 (针对 OACLIPv3 的特殊处理)
+    if cfg.MODEL.name == 'oaclipv3':
+        if not cfg.TRAIN.finetune_backbone and not cfg.TRAIN.use_precomputed_features:
+            m = model.module if isinstance(model, nn.parallel.DistributedDataParallel) else model
+            if hasattr(m, 'feat_extractor'):
+                freeze(m.feat_extractor)
 
+    # 2. 初始化 AMP 缩放器 (建议在 main_worker 实例化一次并传入，或在此处创建)
+    scaler = GradScaler()
+
+    # 3. 初始化计量器 (Meter)
     if device == 'cuda:0':
-        # Tracker.
-        # Name of all losses.
-        list_meters = [
-            'loss_total'
-        ]
+        # 基础指标
+        list_meters = ['loss_total']
         
+        # 兼容软提示模型或原模型的指标
         if cfg.MODEL.name == 'oaclipv3':
-            if cfg.MODEL.use_obj_loss:
-                list_meters.append('loss_aux_obj')
-                list_meters.append('acc_aux_obj')
-            if cfg.MODEL.use_attr_loss:
-                list_meters.append('loss_aux_attr')
-                list_meters.append('acc_aux_attr')
-            if cfg.MODEL.use_emb_pair_loss:
-                list_meters.append('emb_loss')
-            if cfg.MODEL.use_composed_pair_loss:
-                list_meters.append('composed_unseen_loss')
-                list_meters.append('composed_seen_loss')
+            if cfg.MODEL.use_obj_loss: list_meters += ['loss_aux_obj', 'acc_aux_obj']
+            if cfg.MODEL.use_attr_loss: list_meters += ['loss_aux_attr', 'acc_aux_attr']
+            if cfg.MODEL.use_emb_pair_loss: list_meters.append('emb_loss')
+            if cfg.MODEL.use_composed_pair_loss: list_meters += ['composed_unseen_loss', 'composed_seen_loss']
+        else: # clip_softprompt
+            list_meters += ['acc_pair', 'acc_attr', 'acc_obj']
 
-        dict_meters = { 
-            k: utils.AverageMeter() for k in list_meters
-        }
-
-        acc_attr_meter = utils.AverageMeter()
-        acc_obj_meter = utils.AverageMeter()
-        acc_pair_meter = utils.AverageMeter()
+        dict_meters = {k: utils.AverageMeter() for k in list_meters}
+        
+        # 时间计量
         batch_time = utils.AverageMeter()
         data_time = utils.AverageMeter()
         end_time = time.time()
 
     start_iter = (epoch - 1) * len(trainloader)
-
     is_main = (device == 'cuda:0')
+
+    # 4. 训练循环
     for idx, batch in enumerate(tqdm(trainloader, disable=not is_main, mininterval=2.0)):
         it = start_iter + idx + 1
-        if device == 'cuda:0':
+        if is_main:
             data_time.update(time.time() - end_time)
 
+        # 数据搬运
         for k in batch:
-            if isinstance(batch[k], list): 
-                continue
-            batch[k] = batch[k].to(device, non_blocking=True)
-        out = model(batch)
+            if isinstance(batch[k], torch.Tensor):
+                batch[k] = batch[k].to(device, non_blocking=True)
 
-        loss = out['loss_total']
-
+        # --- 核心修改：使用混合精度前向传播 ---
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        
+        with autocast():
+            out = model(batch)
+            loss = out['loss_total']
 
-        if device == 'cuda:0':
-            if 'acc_attr' in out:
-                acc_attr_meter.update(out['acc_attr'])
-                acc_obj_meter.update(out['acc_obj'])
-            acc_pair_meter.update(out['acc_pair'])
+        # --- 核心修改：使用缩放器进行反向传播 ---
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        # ------------------------------------
+
+        # 5. 记录数据
+        if is_main:
             for k in out:
                 if k in dict_meters:
-                    dict_meters[k].update(out[k].item())
+                    # 处理可能在不同卡上的 tensor
+                    val = out[k].item() if isinstance(out[k], torch.Tensor) else out[k]
+                    dict_meters[k].update(val)
+            
             batch_time.update(time.time() - end_time)
             end_time = time.time()
 
-        if (idx + 1) % cfg.TRAIN.disp_interval == 0 and device == 'cuda:0':
-            print(
-                f'Epoch: {epoch} Iter: {idx+1}/{len(trainloader)}, '
-                f'Loss: {dict_meters["loss_total"].avg:.3f}, '
-                f'Acc_Pair: {acc_pair_meter.avg:.2f}, '
-                f'Batch_time: {batch_time.avg:.3f}, Data_time: {data_time.avg:.3f}',
-                flush=True)
+            # 打印日志
+            if (idx + 1) % cfg.TRAIN.disp_interval == 0:
+                print(
+                    f'Epoch: {epoch} Iter: {idx+1}/{len(trainloader)}, '
+                    f'Loss: {dict_meters["loss_total"].avg:.4f}, '
+                    f'Acc_P: {dict_meters.get("acc_pair", dict_meters.get("acc_pair", utils.AverageMeter())).avg:.2f}, '
+                    f'Time: {batch_time.avg:.2f}', flush=True)
 
-            for k in out:
-                if k in dict_meters:
-                    logger.add_scalar('train/%s' % k, dict_meters[k].avg, it)
-                    
-                logger.add_scalar('train/acc_attr', acc_attr_meter.avg, it)
-                logger.add_scalar('train/acc_obj', acc_obj_meter.avg, it)
-               
-            logger.add_scalar('train/acc_pair', acc_pair_meter.avg, it)
-            
-            batch_time.reset()
-            data_time.reset()
-            acc_pair_meter.reset()
-            if 'acc_attr' in out:
-                acc_attr_meter.reset()
-                acc_obj_meter.reset()
-            for k in out:
-                if k in dict_meters:
+                # Tensorboard 记录
+                for k in dict_meters:
+                    logger.add_scalar(f'train/{k}', dict_meters[k].avg, it)
+                
+                # 重置周期性计量器
+                for k in dict_meters:
                     dict_meters[k].reset()
+                batch_time.reset()
+                data_time.reset()
 
 def validate_ge(epoch, model, testloader, evaluator, device, phase='val'):
     model.eval()
@@ -377,13 +370,18 @@ def main_worker(gpu, cfg):
 
     if cfg.MODEL.name == 'oaclipv3':
         model = OACLIPv3(trainset, cfg)
+    elif cfg.MODEL.name == 'clip_softprompt':
+        model = CLIPSoftPrompt(trainset, cfg)
+    else:
+        raise ValueError(f"Unknown model: {cfg.MODEL.name}")
     model.to(device)
-    freeze(model.attr_embedder)
-    freeze(model.obj_embedder)
-    freeze(model.pair_embedder)
+    if cfg.MODEL.name == 'oaclipv3':
+        freeze(model.attr_embedder)
+        freeze(model.obj_embedder)
+        freeze(model.pair_embedder)
 
-    if not cfg.TRAIN.finetune_backbone and not cfg.TRAIN.use_precomputed_features:
-        freeze(model.feat_extractor)
+        if not cfg.TRAIN.finetune_backbone and not cfg.TRAIN.use_precomputed_features:
+            freeze(model.feat_extractor)
     ## to print the number of parameters
     # total_params = utils.count_parameters(model)
     
@@ -393,7 +391,7 @@ def main_worker(gpu, cfg):
         if gpu == 0:
             print('Wrap model with DistributedDataParallel')
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[gpu], broadcast_buffers=False, find_unused_parameters=True)
+            model, device_ids=[gpu], broadcast_buffers=False, find_unused_parameters=False)
 
     if gpu == 0:
         m = model
@@ -416,16 +414,23 @@ def main_worker(gpu, cfg):
             continue
         name_no_prefix = name.replace('module.', '', 1)
         
-        if 'attr_embedder' in name_no_prefix or 'obj_embedder' in name_no_prefix:
-            if cfg.TRAIN.lr_word_embedding > 0:
-                params_word_embedding.append(p)
-                if gpu == 0: print('params_word_embedding: %s' % name)
-        elif name_no_prefix.startswith('feat_extractor'):
-            params_encoder.append(p)
-            if gpu == 0: print('params_encoder: %s' % name)
-        else:
+        if cfg.MODEL.name == 'clip_softprompt':
+            # 软提示模型：所有可训练参数都以主学习率更新
             params.append(p)
-            if gpu == 0: print('params_main: %s' % name)
+            if gpu == 0:
+                print(f'trainable: {name}  shape={list(p.shape)}')
+        else:
+            # 原始 oaclipv3 的分组逻辑
+            if 'attr_embedder' in name_clean or 'obj_embedder' in name_clean:
+                if cfg.TRAIN.lr_word_embedding > 0:
+                    params_word_embedding.append(p)
+                    if gpu == 0: print('params_word_embedding: %s' % name)
+            elif name_clean.startswith('feat_extractor'):
+                params_encoder.append(p)
+                if gpu == 0: print('params_encoder: %s' % name)
+            else:
+                params.append(p)
+                if gpu == 0: print('params_main: %s' % name)
 
     if cfg.TRAIN.lr_word_embedding > 0:
         optimizer = optim.Adam([

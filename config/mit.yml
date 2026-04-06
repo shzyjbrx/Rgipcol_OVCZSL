@@ -23,10 +23,10 @@ MODEL:
   dropout_cross_attn: 0.0
   emb_dim: 300
   emb_loss_main: 0.1 
-  extra_pair_loss_ratio: 0.2 
-  extra_attr_loss_ratio: 0.05 
-  extra_obj_loss_ratio: 0.05 
-  extra_neighbor_weight: 0.05 
+  extra_pair_loss_ratio: 0.0
+  extra_attr_loss_ratio: 0.0
+  extra_obj_loss_ratio: 0.0
+  extra_neighbor_weight: 0.0
   seen_loss_ratio: 0.1 
   smoothing: 0.8
   unseen_loss_ratio: 0.1 
@@ -52,9 +52,9 @@ MODEL:
   use_attr_loss: True
   use_composed_pair_loss: True
   use_emb_pair_loss: True
-  use_extra_pair_loss: True 
-  use_extra_attr_loss: True
-  use_extra_obj_loss: True
+  use_extra_pair_loss: False 
+  use_extra_attr_loss: False
+  use_extra_obj_loss: False
   use_fg_estimator: False
   use_obj_loss: True
   weights: ''

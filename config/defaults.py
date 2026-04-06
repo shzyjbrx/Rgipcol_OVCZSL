@@ -28,7 +28,8 @@ _C.MODEL.load_checkpoint = False
 _C.MODEL.weights = ''
 _C.MODEL.optim_weights = ''
 _C.MODEL.eval_topk = 1
-
+_C.MODEL.n_ctx        = 16    # 软提示长度
+_C.MODEL.use_nel_data = True  # False 可跳过 NEL pickle 加载
 # -----------------------------------------------------------------------
 # Train
 # -----------------------------------------------------------------------
