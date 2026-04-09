@@ -391,7 +391,7 @@ def main_worker(gpu, cfg):
         if gpu == 0:
             print('Wrap model with DistributedDataParallel')
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[gpu], broadcast_buffers=False, find_unused_parameters=False)
+            model, device_ids=[gpu], broadcast_buffers=False, find_unused_parameters=True)
 
     if gpu == 0:
         m = model

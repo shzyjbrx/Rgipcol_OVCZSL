@@ -14,6 +14,8 @@ DISTRIBUTED:
 MODEL:
   name: 'clip_softprompt'
   n_ctx: 8                       # 软提示长度 (Troika 默认也是 8，且更省显存)
+  lora_rank: 8
+  lora_alpha: 16
 
   # ── 损失权重 ────────────────────────────────────────
   w_loss_attr: 0.3
@@ -68,7 +70,7 @@ TRAIN:
   seed:                   124
   start_epoch:            1
   start_epoch_validate:   0
-  test_batch_size:        512
+  test_batch_size:        256
   use_precomputed_features: False
   wd:                     1e-4
   wd_encoder:             0.0

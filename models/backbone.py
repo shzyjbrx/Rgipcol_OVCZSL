@@ -3,7 +3,39 @@ import torch.nn as nn
 import torchvision
 import clip
 import os
+from .basic_layers import LoRALinear
 
+def inject_lora(model, rank=8, lora_alpha=16):
+    """
+    精细化注入：避开 MultiheadAttention 的 out_proj，优先针对 MLP 和 Projection 层
+    """
+    for name, module in model.named_modules():
+        # 1. 仅针对 Linear 层
+        if isinstance(module, nn.Linear):
+            # 2. 💡 过滤策略：
+            # 避开 "out_proj"（解决报错的关键）
+            # 优先选择 "mlp"（ViT 的核心）和 "text_projection"（文本编码器末尾）
+            if "visual" in name and "mlp" in name and "out_proj" not in name:
+                
+                attrs = name.split('.')
+                submodule = model
+                for attr in attrs[:-1]:
+                    submodule = getattr(submodule, attr)
+                
+                original_layer = getattr(submodule, attrs[-1])
+                # 替换为支持 LoRA 的层
+                setattr(submodule, attrs[-1], LoRALinear(original_layer, rank, lora_alpha))
+                print(f"[LoRA] 成功注入: {name}") # 调试时可开启
+
+    # 3. 启用梯度
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+            
+    return model
+    
 class Backbone(nn.Module):
     def __init__(self, backbone='resnet50'):
         super(Backbone, self).__init__()

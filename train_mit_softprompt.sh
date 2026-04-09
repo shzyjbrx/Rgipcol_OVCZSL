@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=mit-softprompt
 #SBATCH --partition=gpu_mem
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=12:00:00
@@ -23,7 +23,7 @@ export OMP_NUM_THREADS=1
 
 DATA_ROOT="/home/bingxing2/home/scx6d4e/run/xuanzhenzhen/Base/data/mit-states"
 CONFIG="config/mit_softprompt.yml"
-N_GPU=2
+N_GPU=4
 
 echo "=========================================================="
 echo "  三分支软提示微调 | MIT-States | GPUs: ${N_GPU}"
@@ -36,10 +36,10 @@ python train.py --cfg ${CONFIG} \
     DISTRIBUTED.world_size   ${N_GPU}                  \
     TRAIN.checkpoint_dir     "checkpoints/mit/CLIPL_SoftPT/${SLURM_JOB_ID}" \
     TRAIN.log_dir            "tensorboards/mit/CLIPL_SoftPT/${SLURM_JOB_ID}" \
-    TRAIN.batch_size         128                        \
+    TRAIN.batch_size         256                        \
     TRAIN.lr                 2e-3                       \
     TRAIN.max_epoch          20                        \
-    MODEL.n_ctx              4                         \
+    MODEL.n_ctx              16                         \
     MODEL.w_loss_attr        0.3                        \
     MODEL.w_loss_obj         0.3
 

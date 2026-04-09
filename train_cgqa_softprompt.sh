@@ -5,8 +5,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/cgqa/train/CLIPL_SoftPT-%j.out
-#SBATCH --error=logs/cgqa/train/CLIPL_SoftPT-%j.err
+#SBATCH --output=logs/cgqa/train/CLIPL_SoftPT_LORA-%j.out
+#SBATCH --error=logs/cgqa/train/CLIPL_SoftPT_LORA-%j.err
 
 # 环境清理与加载
 module purge
@@ -40,11 +40,14 @@ python train.py --cfg ${CONFIG} \
     DISTRIBUTED.world_size   ${N_GPU}                   \
     TRAIN.checkpoint_dir     "checkpoints/cgqa/CLIPL_SoftPT/${SLURM_JOB_ID}" \
     TRAIN.log_dir             "tensorboards/cgqa/CLIPL_SoftPT/${SLURM_JOB_ID}" \
-    TRAIN.batch_size         256                        \
+    TRAIN.batch_size         64                        \
     TRAIN.lr                 2e-3                       \
-    TRAIN.max_epoch          20                         \
+    TRAIN.max_epoch          15                         \
     MODEL.n_ctx              8                          \
-    MODEL.w_loss_attr        0.3                        \
+    MODEL.lora_rank          8                         \
+    TRAIN.lr_decay_milestones    [3,6]                \
+    TRAIN.wd                 1e-3                      \
+    MODEL.w_loss_attr        0.5                        \
     MODEL.w_loss_obj         0.3
 
 echo "=========================================================="

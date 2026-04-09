@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import clip
 import os
+import torch.utils.checkpoint as cp 
+from .backbone import inject_lora
 
 class CLIPSoftPrompt(nn.Module):
     """
@@ -20,7 +22,22 @@ class CLIPSoftPrompt(nn.Module):
         clip_type = cfg.TRAIN.clip_type 
 
         # 1. 加载 CLIP 骨干网络
+        # 注意：这里使用类内部定义的 _load_clip 方法，它会处理本地路径
         clip_model = self._load_clip(clip_type)
+
+        # --- 💡 注入 LoRA (Low-Rank Adaptation) ---
+        # 必须在拆解模型组件之前进行注入，以确保 visual 和 transformer 包含 LoRA 层
+        from .backbone import inject_lora
+        
+        # 严格遵守 yacs 配置的大写约定
+        lora_rank = getattr(cfg.MODEL, 'lora_rank', 8)
+        lora_alpha = getattr(cfg.MODEL, 'lora_alpha', 16)
+        
+        # 注入 LoRA 层并返回修改后的模型
+        clip_model = inject_lora(clip_model, rank=lora_rank, lora_alpha=lora_alpha)
+        # ----------------------------------------
+
+        # 2. 拆解并保存模型组件
         self.visual = clip_model.visual
         self.transformer = clip_model.transformer
         self.token_embedding = clip_model.token_embedding
@@ -28,18 +45,20 @@ class CLIPSoftPrompt(nn.Module):
         self.ln_final = clip_model.ln_final
         self.text_projection = clip_model.text_projection
 
-        # 彻底冻结 CLIP 原始参数
-        for p in self.parameters():
-            p.requires_grad = False
+        # 3. 彻底冻结 CLIP 原始参数 (LoRA 参数的 requires_grad 已在 inject_lora 中处理)
+        # 我们只在这里二次确认非 LoRA 参数被冻结
+        for name, p in self.named_parameters():
+            if "lora_" not in name:
+                p.requires_grad = False
 
         self.emb_dim = self.token_embedding.embedding_dim 
 
-        # 2. 💡 预计算原始 CLIP 的“基准特征” (Base Anchor Features)
+        # 4. 💡 预计算原始 CLIP 的“基准特征” (Base Anchor Features)
         # 这些特征作为“锚点”，在训练中保持不变
         print(f"[CLIPSoftPrompt] 正在预计算原始 CLIP 基准特征作为锚点...")
         self._precompute_base_features(dset, clip_model)
 
-        # 3. 初始化可学习参数
+        # 5. 初始化可学习参数
         # (1) 软提示上下文 ctx (用 "a photo of a" 初始化)
         ctx_init = "a photo of a"
         tokens = clip.tokenize(ctx_init)
@@ -52,20 +71,18 @@ class CLIPSoftPrompt(nn.Module):
         self.ctx_comp = nn.Parameter(init_vec.clone())
 
         # (2) 类别嵌入参数 (使用 CLIP 均值初始化，参考 Troika)
-        # 建议将其设为不可训练以保持语义纯净，防止 ua_uo_acc 崩溃
         self.attr_embeds = nn.Parameter(self._init_class_embeds(dset.all_attrs))
         self.obj_embeds  = nn.Parameter(self._init_class_embeds(dset.all_objs))
         self.attr_embeds.requires_grad = False
         self.obj_embeds.requires_grad = False
 
-        # (3) 💡 残差缩放因子 alpha (参考 Troika 中的 lamda)
-        # 初始化为很小的值，确保 Epoch 1 等同于原始 CLIP
+        # (3) 💡 残差缩放因子 alpha (初始化为很小的值)
         self.alpha = nn.Parameter(torch.tensor([0.01])) 
 
         # (4) 可学习温度
         self.logit_scale = nn.Parameter(clip_model.logit_scale.data.clone())
 
-        # 4. 辅助 Buffer 与映射
+        # 6. 辅助 Buffer 与映射
         self._build_index_maps(dset)
         self.register_buffer('sos_token', torch.tensor([49406]))
         self.register_buffer('eos_token', torch.tensor([49407]))
@@ -214,7 +231,7 @@ class CLIPSoftPrompt(nn.Module):
         # 测试阶段缓存优化：大幅提升评估速度
         if self.test_text_features is None:
             with torch.no_grad():
-                # 预计算全量测试组合的锚点 (实时计算或缓存)
+                # 预计算全量测试组合的锚点 (由于上面的修改，这里已经安全了)
                 test_pair_names = [f"{p[0]} {p[1]}" for p in self.all_pairs1]
                 base_c_test = self._compute_manual_feats_live(test_pair_names).to(self.alpha.device)
                 
@@ -223,32 +240,106 @@ class CLIPSoftPrompt(nn.Module):
                 test_obj_idx  = [self.dset.obj2idx[p[1]] for p in self.all_pairs1]
                 t_comp_embeds = (self.attr_embeds[test_attr_idx] + self.obj_embeds[test_obj_idx]) / 2.0
                 
-                # 融合生成最终测试特征
-                self.test_text_features = self._encode_text(self.ctx_comp, t_comp_embeds, base_c_test)
+                # 💡 新增：融合生成最终测试特征 (增加分块处理防止 OOM)
+                chunk_size = 256
+                test_feats_list = []
+                for i in range(0, t_comp_embeds.shape[0], chunk_size):
+                    chunk_embeds = t_comp_embeds[i : i+chunk_size]
+                    chunk_base = base_c_test[i : i+chunk_size]
+                    chunk_out = self._encode_text(self.ctx_comp, chunk_embeds, chunk_base)
+                    test_feats_list.append(chunk_out)
+                    
+                self.test_text_features = torch.cat(test_feats_list, dim=0)
         
         return self._val_forward(batch)
+
+    def _construct_prompts(self, ctx, class_embeds):
+        """辅助函数：构造进入 Transformer 前的 Embedding 序列"""
+        N = class_embeds.shape[0]
+        with torch.no_grad():
+            sos_emb = self.token_embedding(self.sos_token).float()
+            eos_emb = self.token_embedding(self.eos_token).float()
+        
+        sos_exp = sos_emb.expand(N, -1, -1)
+        ctx_exp = ctx.unsqueeze(0).expand(N, -1, -1)
+        cls_exp = class_embeds.unsqueeze(1)
+        eos_exp = eos_emb.expand(N, -1, -1)
+        
+        prefix = torch.cat([sos_exp, ctx_exp, cls_exp, eos_exp], dim=1)
+        pad_len = 77 - prefix.shape[1]
+        pad_emb = torch.zeros(N, pad_len, self.emb_dim, device=prefix.device, dtype=prefix.dtype)
+        return torch.cat([prefix, pad_emb], dim=1)
 
     def _train_forward(self, batch):
         imgs = batch['img']
         p_idx_tr = batch['pair']
-
+        
+        # 视觉编码 (正常执行)
         v = self._encode_visual(imgs)
 
-        # 分支 1: 属性
-        t_a = self._encode_text(self.ctx_attr, self.attr_embeds[self.tr_attr_idx], self.base_attr_all[self.tr_attr_idx])
-        # 分支 2: 对象
-        t_o = self._encode_text(self.ctx_obj,  self.obj_embeds[self.tr_obj_idx], self.base_obj_all[self.tr_obj_idx])
-        # 分支 3: 组合
+        # 1. 准备所有文本输入
+        attr_emb = self.attr_embeds[self.tr_attr_idx]
+        x_a = self._construct_prompts(self.ctx_attr, attr_emb)
+        obj_emb = self.obj_embeds[self.tr_obj_idx]
+        x_o = self._construct_prompts(self.ctx_obj, obj_emb)
         pair_a_emb = self.attr_embeds[self.train_pair_attr_indices]
         pair_o_emb = self.obj_embeds[self.train_pair_obj_indices]
-        t_c = self._encode_text(self.ctx_comp, (pair_a_emb + pair_o_emb) / 2.0, self.base_pair_tr)
+        comp_emb = (pair_a_emb + pair_o_emb) / 2.0
+        x_c = self._construct_prompts(self.ctx_comp, comp_emb)
 
+        n_a, n_o, n_c = x_a.shape[0], x_o.shape[0], x_c.shape[0]
+        x_all = torch.cat([x_a, x_o, x_c], dim=0)
+
+        # --------------------------------------------------------------------
+        # 💡 核心修复：定义 Transformer 的前向逻辑 (为了配合 checkpoint)
+        # --------------------------------------------------------------------
+        def transformer_forward(x_in):
+            # 将原来 transformer 及其前后相关的逻辑写在一起
+            x_in = x_in + self.positional_embedding.float()
+            x_in = x_in.permute(1, 0, 2)
+            # 这里的 self.transformer 包含了你注入的 LoRA 层
+            x_in = self.transformer(x_in) 
+            x_in = x_in.permute(1, 0, 2).float()
+            x_in = self.ln_final(x_in)
+            return x_in
+
+        # 2. 分段进入 Transformer 并开启 Checkpoint
+        from torch.utils.checkpoint import checkpoint # 确保导入
+        
+        sub_batch_size = 64  # 根据 40G A100 的压力，64-128 之间比较合适
+        all_learned_feats = []
+        
+        for i in range(0, x_all.shape[0], sub_batch_size):
+            x_chunk = x_all[i : i + sub_batch_size]
+            
+            # 💡 关键：使用 checkpoint 运行分块，而不是直接运行
+            # use_reentrant=False 是新版 PyTorch 推荐的、与 DDP 兼容性最好的写法
+            x_chunk_out = checkpoint(transformer_forward, x_chunk, use_reentrant=False)
+            
+            # 提取 EOS 位置特征并投影
+            eos_pos = 1 + self.n_ctx + 1 
+            learned_chunk = x_chunk_out[:, eos_pos] @ self.text_projection.float()
+            all_learned_feats.append(learned_chunk)
+        
+        # --------------------------------------------------------------------
+
+        # 拼接分段结果
+        learned_feats_all = torch.cat(all_learned_feats, dim=0)
+        learned_feats_all = F.normalize(learned_feats_all, dim=-1)
+
+        # 3. 拆分回分支并计算残差 (保持原逻辑)
+        t_a_learned, t_o_learned, t_c_learned = torch.split(learned_feats_all, [n_a, n_o, n_c], dim=0)
+        
+        t_a = F.normalize(self.base_attr_all[self.tr_attr_idx] + self.alpha * t_a_learned, dim=-1)
+        t_o = F.normalize(self.base_obj_all[self.tr_obj_idx] + self.alpha * t_o_learned, dim=-1)
+        t_c = F.normalize(self.base_pair_tr + self.alpha * t_c_learned, dim=-1)
+
+        # 4. 计算损失
         scale = self.logit_scale.exp()
         logits_c = scale * (v @ t_c.T)
         logits_a = scale * (v @ t_a.T)
         logits_o = scale * (v @ t_o.T)
 
-        # 损失计算 (假设 train.py 已将全局索引转换为训练本地索引)
         loss_c = F.cross_entropy(logits_c, p_idx_tr)
         loss_a = F.cross_entropy(logits_a, batch['attr'])
         loss_o = F.cross_entropy(logits_o, batch['obj'])
@@ -276,18 +367,25 @@ class CLIPSoftPrompt(nn.Module):
         return F.normalize(feats.float(), dim=-1)
 
     def _compute_manual_feats_live(self, texts_raw):
-        """测试时实时计算手工提示词锚点"""
+        """测试时实时计算手工提示词锚点 (增加分块防止 OOM)"""
         texts = [f"a photo of {t.replace('_', ' ')}" for t in texts_raw]
         tokens = clip.tokenize(texts).to(self.alpha.device)
+        
+        chunk_size = 256 # 分块大小，256对于A100非常安全
+        all_feats = []
         with torch.no_grad():
-            x = self.token_embedding(tokens).float()
-            x = x + self.positional_embedding.float()
-            x = x.permute(1, 0, 2)
-            x = self.transformer(x)
-            x = x.permute(1, 0, 2)
-            x = self.ln_final(x)
-            x = x[torch.arange(x.shape[0]), tokens.argmax(dim=-1)] @ self.text_projection.float()
-            return F.normalize(x, dim=-1)
+            for i in range(0, len(tokens), chunk_size):
+                batch_tokens = tokens[i : i+chunk_size]
+                x = self.token_embedding(batch_tokens).float()
+                x = x + self.positional_embedding.float()
+                x = x.permute(1, 0, 2)
+                x = self.transformer(x)
+                x = x.permute(1, 0, 2)
+                x = self.ln_final(x)
+                x = x[torch.arange(x.shape[0]), batch_tokens.argmax(dim=-1)] @ self.text_projection.float()
+                all_feats.append(F.normalize(x, dim=-1))
+                
+        return torch.cat(all_feats, dim=0)
 
     def _load_clip(self, clip_type):
         local_path = '/home/bingxing2/home/scx6d4e/run/xuanzhenzhen/Base/checkpoints/ViT-L-14.pt'

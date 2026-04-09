@@ -1,5 +1,6 @@
+import torch 
 import torch.nn as nn
-
+import math
 
 class MLP(nn.Module):
     def __init__(
@@ -54,3 +55,32 @@ class MLP(nn.Module):
     def forward(self, x):
         output = self.mod(x)
         return output
+    
+class LoRALinear(nn.Module):
+    def __init__(self, original_layer, rank=8, lora_alpha=16):
+        super(LoRALinear, self).__init__()
+        self.original_layer = original_layer # 冻结的原始 CLIP 层
+        in_features = original_layer.in_features
+        out_features = original_layer.out_features
+        
+        # LoRA 矩阵
+        self.lora_A = nn.Parameter(torch.zeros((rank, in_features)))
+        self.lora_B = nn.Parameter(torch.zeros((out_features, rank)))
+        self.scaling = lora_alpha / rank
+        
+        # 初始化
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B)
+    
+    @property
+    def weight(self):
+        return self.original_layer.weight
+
+    @property
+    def bias(self):
+        return self.original_layer.bias
+
+    def forward(self, x):
+        # 结果 = 原始分支 + (x * A^T * B^T) * scaling
+        lora_output = (x @ self.lora_A.t() @ self.lora_B.t()) * self.scaling
+        return self.original_layer(x) + lora_output
