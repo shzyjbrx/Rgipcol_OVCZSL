@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import clip
 import os
 import torch.utils.checkpoint as cp 
-from .backbone import inject_lora
+from .backbone import inject_adapter
 
 class CLIPSoftPrompt(nn.Module):
     """
@@ -25,16 +25,15 @@ class CLIPSoftPrompt(nn.Module):
         # 注意：这里使用类内部定义的 _load_clip 方法，它会处理本地路径
         clip_model = self._load_clip(clip_type)
 
-        # --- 💡 注入 LoRA (Low-Rank Adaptation) ---
-        # 必须在拆解模型组件之前进行注入，以确保 visual 和 transformer 包含 LoRA 层
-        from .backbone import inject_lora
+        # --- 💡 注入 Adapter ---
+        # 必须在拆解模型组件之前进行注入，以确保 visual 包含 Adapter 层
+        from .backbone import inject_adapter
         
-        # 严格遵守 yacs 配置的大写约定
-        lora_rank = getattr(cfg.MODEL, 'lora_rank', 8)
-        lora_alpha = getattr(cfg.MODEL, 'lora_alpha', 16)
+        # 获取压缩因子，如果没有配置则默认设为 4 (等效于把 768 维降到 192 维)
+        reduction_factor = getattr(cfg.MODEL, 'adapter_reduction', 4)
         
-        # 注入 LoRA 层并返回修改后的模型
-        clip_model = inject_lora(clip_model, rank=lora_rank, lora_alpha=lora_alpha)
+        # 注入 Adapter 层并返回修改后的模型
+        clip_model = inject_adapter(clip_model, reduction_factor=reduction_factor, scale=1.0)
         # ----------------------------------------
 
         # 2. 拆解并保存模型组件
@@ -45,10 +44,10 @@ class CLIPSoftPrompt(nn.Module):
         self.ln_final = clip_model.ln_final
         self.text_projection = clip_model.text_projection
 
-        # 3. 彻底冻结 CLIP 原始参数 (LoRA 参数的 requires_grad 已在 inject_lora 中处理)
-        # 我们只在这里二次确认非 LoRA 参数被冻结
+        # 3. 彻底冻结 CLIP 原始参数 (Adapter 参数的 requires_grad 已在 inject_adapter 中处理)
+        # 我们只在这里二次确认非 Adapter 参数被冻结
         for name, p in self.named_parameters():
-            if "lora_" not in name:
+            if "down_proj" not in name and "up_proj" not in name:
                 p.requires_grad = False
 
         self.emb_dim = self.token_embedding.embedding_dim 

@@ -1,35 +1,79 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision
 import clip
 import os
-from .basic_layers import LoRALinear
 
-def inject_lora(model, rank=8, lora_alpha=16):
+# --- 新增 Adapter 模块 ---
+class AdapterLinear(nn.Module):
     """
-    精细化注入：避开 MultiheadAttention 的 out_proj，优先针对 MLP 和 Projection 层
+    并联瓶颈适配器 (Parallel Bottleneck Adapter)
+    包含降维 -> GELU激活 -> 升维 的非线性过程
+    """
+    def __init__(self, original_layer, reduction_factor=4, scale=1.0):
+        super(AdapterLinear, self).__init__()
+        self.original_layer = original_layer
+        in_features = original_layer.in_features
+        out_features = original_layer.out_features
+        
+        # 冻结原始线性层的权重
+        self.original_layer.weight.requires_grad = False
+        if self.original_layer.bias is not None:
+            self.original_layer.bias.requires_grad = False
+
+        # 计算瓶颈维度
+        self.bottleneck_dim = in_features // reduction_factor
+        
+        # 构建 Adapter 旁路
+        self.down_proj = nn.Linear(in_features, self.bottleneck_dim, bias=False)
+        self.act = nn.GELU()
+        self.up_proj = nn.Linear(self.bottleneck_dim, out_features, bias=False)
+        self.scale = scale
+        
+        # 初始化权重
+        nn.init.normal_(self.down_proj.weight, std=0.02)
+        nn.init.zeros_(self.up_proj.weight) # 初始化为0，确保初期行为等价于原模型
+        
+        # 确保数据类型与原模型一致 (如 float16)
+        self.to(self.original_layer.weight.dtype)
+
+    @property
+    def weight(self):
+        return self.original_layer.weight
+
+    @property
+    def bias(self):
+        return self.original_layer.bias
+
+    def forward(self, x):
+        # 原路输出 + Adapter输出
+        adapter_output = self.up_proj(self.act(self.down_proj(x)))
+        return self.original_layer(x) + self.scale * adapter_output
+
+
+# --- 替换注入函数 ---
+def inject_adapter(model, reduction_factor=4, scale=1.0):
+    """
+    将 Adapter 注入到 CLIP 的 MLP 层中
     """
     for name, module in model.named_modules():
-        # 1. 仅针对 Linear 层
         if isinstance(module, nn.Linear):
-            # 2. 💡 过滤策略：
-            # 避开 "out_proj"（解决报错的关键）
-            # 优先选择 "mlp"（ViT 的核心）和 "text_projection"（文本编码器末尾）
+            # 过滤策略：只对视觉编码器的 MLP 层注入，避开注意力矩阵的投影
             if "visual" in name and "mlp" in name and "out_proj" not in name:
-                
                 attrs = name.split('.')
                 submodule = model
                 for attr in attrs[:-1]:
                     submodule = getattr(submodule, attr)
                 
                 original_layer = getattr(submodule, attrs[-1])
-                # 替换为支持 LoRA 的层
-                setattr(submodule, attrs[-1], LoRALinear(original_layer, rank, lora_alpha))
-                print(f"[LoRA] 成功注入: {name}") # 调试时可开启
+                # 替换为 AdapterLinear
+                setattr(submodule, attrs[-1], AdapterLinear(original_layer, reduction_factor, scale))
+                print(f"[Adapter] 成功注入: {name}")
 
-    # 3. 启用梯度
+    # 启用 Adapter 梯度，冻结其他参数
     for name, param in model.named_parameters():
-        if "lora_" in name:
+        if "down_proj" in name or "up_proj" in name:
             param.requires_grad = True
         else:
             param.requires_grad = False

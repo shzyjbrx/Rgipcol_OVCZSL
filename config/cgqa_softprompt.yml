@@ -14,8 +14,7 @@ DISTRIBUTED:
 MODEL:
   name: 'clip_softprompt'
   n_ctx: 8                       # 软提示长度 (Troika 默认也是 8，且更省显存)
-  lora_rank: 8
-  lora_alpha: 16
+  adapter_reduction: 4 
 
   # ── 损失权重 ────────────────────────────────────────
   w_loss_attr: 0.3

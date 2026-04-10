@@ -31,8 +31,9 @@ _C.MODEL.eval_topk = 1
 _C.MODEL.n_ctx        = 16    # 软提示长度
 _C.MODEL.use_nel_data = True  # False 可跳过 NEL pickle 加载
 # 在 _C.model 部分添加默认值
-_C.MODEL.lora_rank = 8
-_C.MODEL.lora_alpha = 16
+# _C.MODEL.lora_rank = 8
+# _C.MODEL.lora_alpha = 16
+_C.MODEL.adapter_reduction = 4 
 # -----------------------------------------------------------------------
 # Train
 # -----------------------------------------------------------------------

@@ -5,8 +5,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=12:00:00
-#SBATCH --output=logs/mit/train/CLIPL_SoftPT-%j.out
-#SBATCH --error=logs/mit/train/CLIPL_SoftPT-%j.err
+#SBATCH --output=logs/mit/Adapter/CLIPL_Adapter-%j.out
+#SBATCH --error=logs/mit/Adapter/CLIPL_Adapter-%j.err
 
 module purge
 module load compilers/gcc/9.3.0
@@ -39,6 +39,7 @@ python train.py --cfg ${CONFIG} \
     TRAIN.batch_size         256                        \
     TRAIN.lr                 2e-3                       \
     TRAIN.max_epoch          20                        \
+    MODEL.adapter_reduction  8                          \
     MODEL.n_ctx              16                         \
     MODEL.w_loss_attr        0.3                        \
     MODEL.w_loss_obj         0.3

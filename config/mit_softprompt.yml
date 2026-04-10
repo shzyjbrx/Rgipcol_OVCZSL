@@ -14,8 +14,7 @@ DISTRIBUTED:
 MODEL:
   name: 'clip_softprompt'
   n_ctx: 16                      # 软提示长度
-  lora_rank: 4
-  lora_alpha: 8
+  adapter_reduction: 4 
 
   # ── 损失权重 ────────────────────────────────────────
   w_loss_attr: 0.3
